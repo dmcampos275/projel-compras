@@ -100,10 +100,21 @@ export function loadBaseData(origin: RecordOrigin): { records: PurchaseRecord[];
 export async function loadBaseDataAsync(
   origin: RecordOrigin
 ): Promise<{ records: PurchaseRecord[]; report: MappingReport; isDemo?: boolean } | null> {
+  const localData = loadBaseData(origin);
+  const isLocalReal = Boolean(localData && localData.report && !(localData.report.fileName || '').toLowerCase().includes('demo'));
+
   try {
     const firestoreData = await loadBaseDataFromFirestore(origin);
     if (firestoreData && firestoreData.records.length > 0) {
-      // Atualiza o cache local persistente com os dados mais recentes do Firestore
+      const isFirestoreDemo = Boolean(firestoreData.isDemo || (firestoreData.report?.fileName || '').toLowerCase().includes('demo'));
+
+      // Se o usuário tem planilha real no navegador, nunca substitui por demo vindo do Firestore
+      if (isFirestoreDemo && isLocalReal) {
+        console.log(`[Storage] Preservando planilha real de ${origin} gravada no navegador contra demo da nuvem.`);
+        return localData;
+      }
+
+      // Atualiza o cache local persistente com os dados reais mais recentes
       saveBaseDataLocal(origin, firestoreData.records, firestoreData.report);
       return firestoreData;
     }
@@ -111,7 +122,7 @@ export async function loadBaseDataAsync(
     console.warn(`Falha ao carregar ${origin} do Firestore, recorrendo ao cache local:`, err);
   }
 
-  return loadBaseData(origin);
+  return localData;
 }
 
 export function clearBaseData(origin: RecordOrigin): void {

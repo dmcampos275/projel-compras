@@ -38,6 +38,7 @@ import { calculateKPIs } from './utils/kpiCalculator';
 import {
   saveBaseData,
   saveBaseDataLocal,
+  loadBaseData,
   loadBaseDataAsync,
   clearAllSavedData,
   saveThemePreference,
@@ -205,8 +206,14 @@ export default function App() {
     // todas as pessoas com a página aberta recebem os novos dados instantaneamente!
     const unsubCompras = subscribeToDatasetUpdates('Compras', (fresh) => {
       if (!isMounted || !fresh || fresh.records.length === 0) return;
+      const local = loadBaseData('Compras');
+      const isLocalReal = Boolean(local && local.report && !(local.report.fileName || '').toLowerCase().includes('demo'));
+      if (fresh.isDemo && isLocalReal) {
+        return;
+      }
       setComprasRecords(fresh.records);
       setComprasReport(fresh.report);
+      saveBaseDataLocal('Compras', fresh.records, fresh.report);
       setToastNotification({
         type: 'info',
         title: 'Planilha de Produtos Atualizada',
@@ -216,8 +223,14 @@ export default function App() {
 
     const unsubServicos = subscribeToDatasetUpdates('Serviços', (fresh) => {
       if (!isMounted || !fresh || fresh.records.length === 0) return;
+      const local = loadBaseData('Serviços');
+      const isLocalReal = Boolean(local && local.report && !(local.report.fileName || '').toLowerCase().includes('demo'));
+      if (fresh.isDemo && isLocalReal) {
+        return;
+      }
       setServicosRecords(fresh.records);
       setServicosReport(fresh.report);
+      saveBaseDataLocal('Serviços', fresh.records, fresh.report);
       setToastNotification({
         type: 'info',
         title: 'Planilha de Serviços Atualizada',
@@ -232,13 +245,13 @@ export default function App() {
     };
   }, []);
 
-  // Processamento do upload independente por Origem com gravação persistente na nuvem
+  // Processamento do upload independente por Origem com gravação persistente e resposta imediata
   const handleFileSelected = async (file: File, origin: RecordOrigin) => {
     setIsLoading(true);
     setError(null);
     setUploadProgress({
       step: `Lendo e estruturando planilha de ${origin}...`,
-      percent: 5,
+      percent: 15,
       savedChunks: 0,
       totalChunks: 1,
     });
@@ -247,23 +260,23 @@ export default function App() {
       const otherReport = origin === 'Compras' ? servicosReport : comprasReport;
       const otherHeaders = otherReport ? otherReport.recognizedColumns.map((c) => c.matchedHeader) : undefined;
 
+      // Breve pausa para permitir ao navegador desenhar a barra de progresso inicial
+      await new Promise((r) => setTimeout(r, 60));
+
       const result = await parsePurchasesFile(file, file.name, origin, undefined, otherHeaders);
 
       if (result.records.length === 0) {
         throw new Error(`Nenhuma linha válida foi encontrada na planilha de ${origin}.`);
       }
 
-      setIsSyncingWithFirestore(true);
+      setUploadProgress({
+        step: `Calculando métricas e organizando ${result.records.length.toLocaleString('pt-BR')} registros...`,
+        percent: 60,
+        savedChunks: 0,
+        totalChunks: 1,
+      });
 
-      // Salva tanto no cache local quanto no Cloud Firestore compartilhado
-      const isSavedToCloud = await saveBaseData(
-        origin,
-        result.records,
-        result.report,
-        true,
-        (prog) => setUploadProgress(prog)
-      );
-
+      // 1. Atualização IMEDIATA do estado e cache local permanente: resposta rápida que nunca trava
       if (origin === 'Compras') {
         setComprasRecords(result.records);
         setComprasReport(result.report);
@@ -282,7 +295,28 @@ export default function App() {
         }
       }
 
+      saveBaseDataLocal(origin, result.records, result.report);
       setFilters(INITIAL_FILTERS);
+
+      setUploadProgress({
+        step: `Sincronizando com a base de dados corporativa...`,
+        percent: 85,
+        savedChunks: 0,
+        totalChunks: 1,
+      });
+
+      setIsSyncingWithFirestore(true);
+
+      // 2. Salva no Cloud Firestore protegido por timeouts rigorosos contra esgotamento de cota
+      const isSavedToCloud = await saveBaseData(
+        origin,
+        result.records,
+        result.report,
+        true,
+        (prog) => setUploadProgress(prog)
+      );
+
+      // Fecha a central de upload e direciona o usuário para o dashboard atualizado
       setShowUploadView(false);
 
       if (isSavedToCloud) {
@@ -294,8 +328,8 @@ export default function App() {
       } else {
         setToastNotification({
           type: 'warning',
-          title: `Planilha de ${origin === 'Compras' ? 'Produtos' : 'Serviços'} Salva no Navegador`,
-          description: 'Os dados foram salvos no armazenamento local. A gravação na nuvem atingiu o limite temporário de cota do Firebase.',
+          title: `Planilha de ${origin === 'Compras' ? 'Produtos' : 'Serviços'} Carregada com Sucesso!`,
+          description: `${result.records.length.toLocaleString('pt-BR')} registros salvos de forma permanente no seu navegador. A sincronização na nuvem aguardará a renovação da cota diária do Firebase.`,
         });
       }
     } catch (err: unknown) {

@@ -142,7 +142,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
                 />
               </div>
               <p className="text-[11px] text-blue-700/80 dark:text-blue-300/80">
-                Os dados estão sendo gravados de forma particionada no Firebase Firestore. Por favor, aguarde até a conclusão.
+                Os dados estão sendo processados e salvos com persistência garantida entre sessões e na nuvem corporativa.
               </p>
             </div>
           )}

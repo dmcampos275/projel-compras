@@ -64,7 +64,10 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
  */
 export async function testConnection(): Promise<boolean> {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout testConnection')), 2500)
+    );
+    await Promise.race([getDocFromServer(doc(db, 'test', 'connection')), timeoutPromise]);
     return true;
   } catch (error: any) {
     if (error?.code === 'resource-exhausted' || error?.message?.includes('Quota limit exceeded')) {

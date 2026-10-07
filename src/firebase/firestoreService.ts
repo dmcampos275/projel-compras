@@ -10,7 +10,26 @@ import {
 import { db, OperationType, handleFirestoreError } from './config';
 import { PurchaseRecord, MappingReport, RecordOrigin } from '../types/purchases';
 
-const CHUNK_SIZE = 250;
+// Tamanho otimizado de chunk (500 registros por documento = pouquíssimas gravações, bem abaixo do limite de 1MB por doc)
+const CHUNK_SIZE = 500;
+
+/**
+ * Função utilitária que aplica timeout a qualquer Promise do Firestore.
+ * Evita que operações travem indefinidamente em conexões lentas ou quando a cota gratuita do Firebase expira.
+ */
+export function withTimeout<T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> {
+  let timer: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err: any = new Error(errorMessage);
+      err.code = 'timeout';
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 /**
  * Sanitiza objetos para o Firestore (substitui undefined por null, converte Date em ISO string)
@@ -48,16 +67,22 @@ export function getDatasetId(origin: RecordOrigin): 'compras' | 'servicos' {
   return origin === 'Serviços' ? 'servicos' : 'compras';
 }
 
-function isQuotaOrPermissionError(err: any): boolean {
+export function isQuotaOrPermissionOrTimeoutError(err: any): boolean {
   if (!err) return false;
-  const msg = err.message || String(err);
-  const code = err.code || '';
+  const msg = (err.message || String(err)).toLowerCase();
+  const code = (err.code || '').toLowerCase();
   return (
     code === 'resource-exhausted' ||
     code === 'permission-denied' ||
-    msg.includes('Quota limit exceeded') ||
-    msg.includes('Free daily write units') ||
-    msg.includes('Missing or insufficient permissions')
+    code === 'timeout' ||
+    code === 'unavailable' ||
+    msg.includes('quota limit exceeded') ||
+    msg.includes('free daily write units') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('missing or insufficient permissions') ||
+    msg.includes('timeout') ||
+    msg.includes('maximum backoff') ||
+    msg.includes('offline')
   );
 }
 
@@ -66,8 +91,8 @@ export interface SaveProgressCallback {
 }
 
 /**
- * Salva a base completa (Produtos/Compras ou Serviços) no Firestore de forma particionada,
- * persistente e compartilhada com toda a empresa.
+ * Salva a base completa (Produtos/Compras ou Serviços) no Firestore de forma particionada e segura.
+ * Nunca trava a interface: possui timeouts rígidos e tratamento gracioso caso a cota do Firebase esteja esgotada.
  */
 export async function saveBaseDataToFirestore(
   origin: RecordOrigin,
@@ -81,67 +106,107 @@ export async function saveBaseDataToFirestore(
   try {
     const isDemo = (report.fileName || '').toLowerCase().includes('demo');
     const sanitizedRecords = records.map(sanitizeRecordForFirestore);
-    const totalChunks = Math.ceil(sanitizedRecords.length / CHUNK_SIZE);
+    const totalChunks = Math.max(1, Math.ceil(sanitizedRecords.length / CHUNK_SIZE));
 
     onProgress?.({
-      step: `Preparando ${records.length.toLocaleString('pt-BR')} registros em ${totalChunks} pacotes...`,
-      percent: 10,
+      step: `Preparando ${records.length.toLocaleString('pt-BR')} registros...`,
+      percent: 25,
       savedChunks: 0,
       totalChunks,
     });
 
-    // 1. Grava os chunks em lotes controlados (4 chunks simultâneos para rapidez sem estourar limites)
-    const BATCH_CONCURRENCY = 4;
-    let savedChunks = 0;
-
-    for (let i = 0; i < totalChunks; i += BATCH_CONCURRENCY) {
-      const batchIndices: number[] = [];
-      for (let j = i; j < Math.min(i + BATCH_CONCURRENCY, totalChunks); j++) {
-        batchIndices.push(j);
-      }
-
-      await Promise.all(
-        batchIndices.map(async (chunkIdx) => {
-          const chunkRecords = sanitizedRecords.slice(
-            chunkIdx * CHUNK_SIZE,
-            (chunkIdx + 1) * CHUNK_SIZE
-          );
-          const chunkPath = `datasets/${datasetId}/chunks/chunk_${chunkIdx}`;
-
-          try {
-            await setDoc(doc(db, 'datasets', datasetId, 'chunks', `chunk_${chunkIdx}`), {
-              id: `chunk_${chunkIdx}`,
-              datasetId,
-              chunkIndex: chunkIdx,
-              count: chunkRecords.length,
-              records: chunkRecords,
-              updatedAt: new Date().toISOString(),
-            });
-          } catch (chunkErr: any) {
-            if (isQuotaOrPermissionError(chunkErr)) {
-              console.warn(
-                `[Firestore] Cota diária gratuita ou permissão ao gravar chunk ${chunkIdx}. Dados mantidos localmente.`
-              );
-              throw chunkErr;
-            }
-            handleFirestoreError(chunkErr, OperationType.WRITE, chunkPath);
-          }
-        })
+    // 1. Gravação do primeiro chunk como teste de conectividade e cota (timeout estrito de 3.5 segundos)
+    const firstChunkRecords = sanitizedRecords.slice(0, CHUNK_SIZE);
+    try {
+      await withTimeout(
+        setDoc(doc(db, 'datasets', datasetId, 'chunks', 'chunk_0'), {
+          id: 'chunk_0',
+          datasetId,
+          chunkIndex: 0,
+          count: firstChunkRecords.length,
+          records: firstChunkRecords,
+          updatedAt: new Date().toISOString(),
+        }),
+        3500,
+        'Tempo limite excedido ao conectar com Firestore (cota diária ou latência na nuvem).'
       );
-
-      savedChunks += batchIndices.length;
-      const progressPercent = 10 + Math.round((savedChunks / totalChunks) * 75);
-      onProgress?.({
-        step: `Gravando no Firebase Firestore (${savedChunks}/${totalChunks} pacotes)...`,
-        percent: progressPercent,
-        savedChunks,
-        totalChunks,
-      });
+    } catch (probeErr: any) {
+      if (isQuotaOrPermissionOrTimeoutError(probeErr)) {
+        console.warn(
+          `[Firestore] Gravação na nuvem indisponível no momento (${probeErr.message}). Os dados continuam salvos no navegador com segurança.`
+        );
+        return false;
+      }
+      handleFirestoreError(probeErr, OperationType.WRITE, `${datasetDocPath}/chunks/chunk_0`);
     }
 
-    // 2. Limpa partições antigas remanescentes se a planilha nova tiver menos registros
+    onProgress?.({
+      step: `Gravando no Firebase Firestore (1/${totalChunks} pacotes)...`,
+      percent: Math.min(90, Math.round((1 / totalChunks) * 65) + 25),
+      savedChunks: 1,
+      totalChunks,
+    });
+
+    // 2. Grava os chunks restantes se houver mais de 1
+    if (totalChunks > 1) {
+      const BATCH_CONCURRENCY = 3;
+      let saved = 1;
+
+      for (let i = 1; i < totalChunks; i += BATCH_CONCURRENCY) {
+        const batchIndices: number[] = [];
+        for (let j = i; j < Math.min(i + BATCH_CONCURRENCY, totalChunks); j++) {
+          batchIndices.push(j);
+        }
+
+        try {
+          await withTimeout(
+            Promise.all(
+              batchIndices.map(async (chunkIdx) => {
+                const chunkRecords = sanitizedRecords.slice(
+                  chunkIdx * CHUNK_SIZE,
+                  (chunkIdx + 1) * CHUNK_SIZE
+                );
+                await setDoc(doc(db, 'datasets', datasetId, 'chunks', `chunk_${chunkIdx}`), {
+                  id: `chunk_${chunkIdx}`,
+                  datasetId,
+                  chunkIndex: chunkIdx,
+                  count: chunkRecords.length,
+                  records: chunkRecords,
+                  updatedAt: new Date().toISOString(),
+                });
+              })
+            ),
+            4500,
+            'Tempo limite excedido ao gravar lote no Firestore.'
+          );
+        } catch (batchErr: any) {
+          if (isQuotaOrPermissionOrTimeoutError(batchErr)) {
+            console.warn(
+              `[Firestore] Limite atingido durante gravação de lotes. Dados mantidos localmente.`
+            );
+            return false;
+          }
+          throw batchErr;
+        }
+
+        saved += batchIndices.length;
+        const progressPct = Math.min(90, Math.round((saved / totalChunks) * 65) + 25);
+        onProgress?.({
+          step: `Gravando no Firebase Firestore (${saved}/${totalChunks} pacotes)...`,
+          percent: progressPct,
+          savedChunks: saved,
+          totalChunks,
+        });
+      }
+    }
+
+    // 3. Limpa partições antigas remanescentes se a planilha atual for menor
     try {
-      const existingChunksSnapshot = await getDocs(collection(db, 'datasets', datasetId, 'chunks'));
+      const existingChunksSnapshot = await withTimeout(
+        getDocs(collection(db, 'datasets', datasetId, 'chunks')),
+        3000,
+        'Timeout ao listar partições'
+      );
       const deletePromises: Promise<void>[] = [];
       for (const chunkDoc of existingChunksSnapshot.docs) {
         const data = chunkDoc.data();
@@ -150,13 +215,13 @@ export async function saveBaseDataToFirestore(
         }
       }
       if (deletePromises.length > 0) {
-        await Promise.all(deletePromises);
+        await withTimeout(Promise.all(deletePromises), 3000, 'Timeout ao limpar partições antigas');
       }
     } catch {
       // Ignora falha não crítica de limpeza
     }
 
-    // 3. Grava o documento principal de metadados da base
+    // 4. Grava o documento principal de metadados da base
     onProgress?.({
       step: 'Finalizando publicação e registrando metadados...',
       percent: 95,
@@ -176,7 +241,11 @@ export async function saveBaseDataToFirestore(
       updatedAt: new Date().toISOString(),
     };
 
-    await setDoc(doc(db, 'datasets', datasetId), metadataPayload);
+    await withTimeout(
+      setDoc(doc(db, 'datasets', datasetId), metadataPayload),
+      3500,
+      'Timeout ao gravar metadados no Firestore'
+    );
 
     onProgress?.({
       step: 'Concluído com sucesso!',
@@ -187,13 +256,13 @@ export async function saveBaseDataToFirestore(
 
     return true;
   } catch (err: any) {
-    if (isQuotaOrPermissionError(err)) {
+    if (isQuotaOrPermissionOrTimeoutError(err)) {
       console.warn(
-        `[Firestore] Cota diária do Firebase atingida para ${origin}. Os dados permanecem seguros no cache persistente local do navegador.`
+        `[Firestore] Cota diária do Firebase atingida ou latência para ${origin}. Os dados permanecem seguros no cache persistente local do navegador.`
       );
       return false;
     }
-    console.error(`[Firestore] Erro ao salvar base ${origin}:`, err);
+    console.warn(`[Firestore] Erro ao salvar base ${origin}:`, err);
     return false;
   }
 }
@@ -207,7 +276,11 @@ export async function loadBaseDataFromFirestore(
   const datasetId = getDatasetId(origin);
 
   try {
-    const docSnap = await getDoc(doc(db, 'datasets', datasetId));
+    const docSnap = await withTimeout(
+      getDoc(doc(db, 'datasets', datasetId)),
+      3500,
+      'Timeout getDoc metadata'
+    );
     if (!docSnap.exists()) {
       return null;
     }
@@ -223,7 +296,11 @@ export async function loadBaseDataFromFirestore(
       const chunkPromises = Array.from({ length: chunksCount }, (_, i) =>
         getDoc(doc(db, 'datasets', datasetId, 'chunks', `chunk_${i}`))
       );
-      const chunkSnaps = await Promise.all(chunkPromises);
+      const chunkSnaps = await withTimeout(
+        Promise.all(chunkPromises),
+        5000,
+        'Timeout getDoc chunks'
+      );
       for (const s of chunkSnaps) {
         if (s.exists()) {
           chunkDataList.push(s.data());
@@ -231,7 +308,11 @@ export async function loadBaseDataFromFirestore(
       }
     } else {
       // Fallback para getDocs caso legados não possuam chunksCount
-      const chunksSnapshot = await getDocs(collection(db, 'datasets', datasetId, 'chunks'));
+      const chunksSnapshot = await withTimeout(
+        getDocs(collection(db, 'datasets', datasetId, 'chunks')),
+        4000,
+        'Timeout getDocs chunks'
+      );
       chunkDataList = chunksSnapshot.docs
         .map((d) => d.data())
         .sort((a, b) => (a.chunkIndex || 0) - (b.chunkIndex || 0));
@@ -257,7 +338,7 @@ export async function loadBaseDataFromFirestore(
       updatedAt: metadata.updatedAt,
     };
   } catch (err: any) {
-    if (isQuotaOrPermissionError(err)) {
+    if (isQuotaOrPermissionOrTimeoutError(err)) {
       console.warn(
         `[Firestore] Cota de leitura atingida ou indisponível para base ${origin}. O sistema operará com os dados locais salvos.`
       );
@@ -278,6 +359,7 @@ export function subscribeToDatasetUpdates(
 ): () => void {
   const datasetId = getDatasetId(origin);
   let lastSeenUpdatedAt: string | null = null;
+  let isInitial = true;
 
   return onSnapshot(
     doc(db, 'datasets', datasetId),
@@ -288,7 +370,14 @@ export function subscribeToDatasetUpdates(
       const meta = snapshot.data();
       const currentUpdatedAt = meta?.updatedAt || null;
 
-      // Só recarrega se o timestamp mudou
+      // Ignora o primeiro disparo no mount para evitar sobreposição com initializeFromFirestore
+      if (isInitial) {
+        isInitial = false;
+        lastSeenUpdatedAt = currentUpdatedAt;
+        return;
+      }
+
+      // Só recarrega se o timestamp realmente mudou após o carregamento inicial
       if (currentUpdatedAt && currentUpdatedAt !== lastSeenUpdatedAt) {
         lastSeenUpdatedAt = currentUpdatedAt;
         const freshData = await loadBaseDataFromFirestore(origin);
@@ -310,20 +399,28 @@ export async function clearBaseDataFromFirestore(origin: RecordOrigin): Promise<
   const datasetId = getDatasetId(origin);
 
   try {
-    const docSnap = await getDoc(doc(db, 'datasets', datasetId));
+    const docSnap = await withTimeout(
+      getDoc(doc(db, 'datasets', datasetId)),
+      3000,
+      'Timeout clear getDoc'
+    );
     if (docSnap.exists()) {
       const chunksCount = docSnap.data().chunksCount || 0;
       if (chunksCount > 0) {
-        await Promise.all(
-          Array.from({ length: chunksCount }, (_, i) =>
-            deleteDoc(doc(db, 'datasets', datasetId, 'chunks', `chunk_${i}`))
-          )
+        await withTimeout(
+          Promise.all(
+            Array.from({ length: chunksCount }, (_, i) =>
+              deleteDoc(doc(db, 'datasets', datasetId, 'chunks', `chunk_${i}`))
+            )
+          ),
+          4000,
+          'Timeout delete chunks'
         );
       }
     }
-    await deleteDoc(doc(db, 'datasets', datasetId));
+    await withTimeout(deleteDoc(doc(db, 'datasets', datasetId)), 3000, 'Timeout delete dataset doc');
   } catch (err: any) {
-    if (isQuotaOrPermissionError(err)) {
+    if (isQuotaOrPermissionOrTimeoutError(err)) {
       console.warn(`[Firestore] Cota atingida ao excluir base ${origin} na nuvem.`);
       return;
     }
