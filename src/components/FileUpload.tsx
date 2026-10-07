@@ -148,10 +148,10 @@ export const FileUpload: React.FC<FileUploadProps> = ({
                   </div>
                   <div>
                     <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                      Planilha de Compras
+                      Planilha de Produtos
                     </h3>
                     <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                      Produtos, Materiais e Insumos Físicos
+                      Materiais, Insumos Físicos e Suprimentos
                     </span>
                   </div>
                 </div>
@@ -263,13 +263,13 @@ export const FileUpload: React.FC<FileUploadProps> = ({
                   >
                     <UploadCloud className="w-8 h-8 text-[#0B2545] dark:text-[#8DA9C4] mb-2" />
                     <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                      Arraste a Planilha de Compras aqui
+                      Arraste a Planilha de Produtos aqui
                     </span>
                     <span className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
                       ou clique para selecionar (.xlsx, .xls ou .csv)
                     </span>
                     <span className="mt-3 px-3 py-1.5 rounded-lg bg-[#0B2545] text-white text-[11px] font-bold">
-                      Selecionar Compras
+                      Selecionar Produtos
                     </span>
                   </div>
                 )}

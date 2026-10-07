@@ -89,7 +89,7 @@ export const ComparisonTab: React.FC<ComparisonTabProps> = ({
   }, [comprasRecords, servicosRecords]);
 
   const sharePieData = [
-    { name: 'Compras (Materiais)', value: totalCompras, color: COLOR_COMPRAS, share: shareCompras },
+    { name: 'Produtos (Materiais)', value: totalCompras, color: COLOR_COMPRAS, share: shareCompras },
     { name: 'Serviços Realizados', value: totalServicos, color: COLOR_SERVICOS, share: shareServicos },
   ];
 
@@ -241,7 +241,7 @@ export const ComparisonTab: React.FC<ComparisonTabProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-black text-slate-900 dark:text-white">
-                Comparativo Consolidado: Compras vs Serviços Realizados
+                Comparativo Consolidado: Produtos vs Serviços Realizados
               </h2>
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
@@ -253,7 +253,7 @@ export const ComparisonTab: React.FC<ComparisonTabProps> = ({
         <div className="flex items-center gap-3 text-xs">
           <div className="flex items-center gap-1.5 font-bold text-slate-700 dark:text-slate-300">
             <span className="w-3 h-3 rounded-full bg-[#0B2545]" />
-            Compras (Materiais)
+            Produtos (Materiais)
           </div>
           <div className="flex items-center gap-1.5 font-bold text-[#F28C28]">
             <span className="w-3 h-3 rounded-full bg-[#F28C28]" />
@@ -391,7 +391,7 @@ export const ComparisonTab: React.FC<ComparisonTabProps> = ({
                   formatter={(v: any, name: any) => [formatCurrency(Number(v)), name === 'compras' ? 'Materiais' : 'Serviços']}
                   contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '0.75rem', color: '#fff', fontSize: '12px' }}
                 />
-                <Legend formatter={(val) => (val === 'compras' ? 'Compras (Materiais)' : 'Serviços Realizados')} />
+                <Legend formatter={(val) => (val === 'compras' ? 'Produtos (Materiais)' : 'Serviços Realizados')} />
                 <Bar dataKey="compras" name="compras" fill={COLOR_COMPRAS} radius={[4, 4, 0, 0]} />
                 <Bar dataKey="servicos" name="servicos" fill={COLOR_SERVICOS} radius={[4, 4, 0, 0]} />
               </BarChart>

@@ -124,7 +124,7 @@ export const Header: React.FC<HeaderProps> = ({
                 type="button"
                 disabled={!hasCompras}
                 onClick={() => onOriginChange('Compras')}
-                title={hasCompras ? 'Visualizar apenas base de Compras (materiais)' : 'Carregue a Planilha de Compras para habilitar'}
+                title={hasCompras ? 'Visualizar apenas base de Produtos (materiais e insumos)' : 'Carregue a Planilha de Produtos para habilitar'}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
                   originFilter === 'Compras'
                     ? 'bg-[#1E4E8C] text-white shadow-xs border border-blue-400/40'
@@ -134,7 +134,7 @@ export const Header: React.FC<HeaderProps> = ({
                 }`}
               >
                 <Package className="w-3.5 h-3.5 text-blue-300" />
-                <span>Compras</span>
+                <span>Produtos</span>
                 {hasCompras && (
                   <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-blue-900/80 text-blue-200 tabular-nums font-mono">
                     {comprasCount.toLocaleString('pt-BR')}

@@ -121,6 +121,7 @@ export const GlobalFilters: React.FC<GlobalFiltersProps> = ({
                   type="button"
                   disabled={!hasCompras}
                   onClick={() => onOriginChange('Compras')}
+                  title="Filtrar base de Produtos / Materiais"
                   className={`px-2 py-0.5 rounded font-bold transition-all ${
                     originFilter === 'Compras'
                       ? 'bg-[#0B2545] text-white shadow-xs'
@@ -129,7 +130,7 @@ export const GlobalFilters: React.FC<GlobalFiltersProps> = ({
                       : 'opacity-40 cursor-not-allowed'
                   }`}
                 >
-                  Compras
+                  Produtos
                 </button>
                 <button
                   type="button"

@@ -443,7 +443,7 @@ export default function App() {
     },
     {
       id: 'comparison' as ActiveTab,
-      label: 'Comparativo Compras x Serviços',
+      label: 'Comparativo Produtos x Serviços',
       icon: GitCompare,
       badge: comprasRecords.length > 0 && servicosRecords.length > 0 ? 'Misto' : undefined,
       badgeColor: 'bg-[#0B2545] text-white',
