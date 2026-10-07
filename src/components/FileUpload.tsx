@@ -29,6 +29,7 @@ interface FileUploadProps {
   comprasReport: MappingReport | null;
   servicosReport: MappingReport | null;
   onContinueToDashboard?: () => void;
+  uploadProgress?: { step: string; percent: number; savedChunks: number; totalChunks: number } | null;
 }
 
 export const FileUpload: React.FC<FileUploadProps> = ({
@@ -40,6 +41,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   comprasReport,
   servicosReport,
   onContinueToDashboard,
+  uploadProgress,
 }) => {
   const [draggingTarget, setDraggingTarget] = useState<RecordOrigin | null>(null);
   const [showVerificationCompras, setShowVerificationCompras] = useState(false);
@@ -116,6 +118,32 @@ export const FileUpload: React.FC<FileUploadProps> = ({
                   {error}
                 </p>
               </div>
+            </div>
+          )}
+
+          {/* INDICADOR DE GRAVAÇÃO / SINCRONIZAÇÃO EM TEMPO REAL */}
+          {isLoading && uploadProgress && (
+            <div className="p-4 rounded-2xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/50 space-y-2.5 animate-in fade-in duration-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 text-blue-600 dark:text-blue-400 animate-spin" />
+                  <span className="text-xs font-bold text-blue-900 dark:text-blue-200">
+                    {uploadProgress.step}
+                  </span>
+                </div>
+                <span className="text-xs font-mono font-bold text-blue-700 dark:text-blue-300">
+                  {uploadProgress.percent}%
+                </span>
+              </div>
+              <div className="w-full bg-blue-200/60 dark:bg-blue-900/40 rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-blue-600 to-indigo-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${Math.min(100, Math.max(5, uploadProgress.percent))}%` }}
+                />
+              </div>
+              <p className="text-[11px] text-blue-700/80 dark:text-blue-300/80">
+                Os dados estão sendo gravados de forma particionada no Firebase Firestore. Por favor, aguarde até a conclusão.
+              </p>
             </div>
           )}
 

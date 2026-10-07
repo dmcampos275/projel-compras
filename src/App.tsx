@@ -16,6 +16,8 @@ import {
   AlertCircle,
   Briefcase,
   GitCompare,
+  CheckCircle2,
+  X,
 } from 'lucide-react';
 import {
   PurchaseRecord,
@@ -35,11 +37,13 @@ import {
 import { calculateKPIs } from './utils/kpiCalculator';
 import {
   saveBaseData,
+  saveBaseDataLocal,
   loadBaseDataAsync,
   clearAllSavedData,
   saveThemePreference,
   loadThemePreference,
 } from './utils/storage';
+import { subscribeToDatasetUpdates } from './firebase/firestoreService';
 import { testConnection } from './firebase/config';
 
 // Componentes
@@ -104,6 +108,21 @@ export default function App() {
   const [isReconciliationModalOpen, setIsReconciliationModalOpen] = useState(false);
   const [mappingModalOrigin, setMappingModalOrigin] = useState<RecordOrigin>('Compras');
 
+  // Progresso em tempo real do upload e gravação particionada no Firestore
+  const [uploadProgress, setUploadProgress] = useState<{
+    step: string;
+    percent: number;
+    savedChunks: number;
+    totalChunks: number;
+  } | null>(null);
+
+  // Notificação Toast para feedback claro de persistência na nuvem
+  const [toastNotification, setToastNotification] = useState<{
+    type: 'success' | 'warning' | 'info';
+    title: string;
+    description: string;
+  } | null>(null);
+
   // Inicializa tema no HTML element
   useEffect(() => {
     if (theme === 'dark') {
@@ -118,7 +137,7 @@ export default function App() {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   };
 
-  // Carrega do Cloud Firestore na inicialização (com fallback para cache local)
+  // Carrega do Cloud Firestore na inicialização e ativa sincronização em tempo real para toda a empresa
   useEffect(() => {
     let isMounted = true;
 
@@ -151,7 +170,7 @@ export default function App() {
         }
 
         if (!loadedAny) {
-          // Inicia com o conjunto completo de demonstração da Projel (Compras + Serviços)
+          // Se nenhuma planilha foi cadastrada, carrega demonstração estritamente local (sem salvar na nuvem)
           const demoCompras = generateComprasDemoData();
           const demoServicos = generateServicosDemoData();
 
@@ -161,9 +180,9 @@ export default function App() {
           setServicosReport(demoServicos.report);
           setOriginFilter('Consolidado');
 
-          // Salva no armazenamento persistente local (localStorage + sessionStorage)
-          saveBaseData('Compras', demoCompras.records, demoCompras.report);
-          saveBaseData('Serviços', demoServicos.records, demoServicos.report);
+          // Salva apenas no armazenamento local para não poluir o Firestore da empresa
+          saveBaseDataLocal('Compras', demoCompras.records, demoCompras.report);
+          saveBaseDataLocal('Serviços', demoServicos.records, demoServicos.report);
         } else {
           if (cloudCompras && cloudServicos) {
             setOriginFilter('Consolidado');
@@ -182,15 +201,48 @@ export default function App() {
 
     initializeFromFirestore();
 
+    // Sincronização em tempo real: se qualquer usuário na empresa enviar uma nova planilha no site,
+    // todas as pessoas com a página aberta recebem os novos dados instantaneamente!
+    const unsubCompras = subscribeToDatasetUpdates('Compras', (fresh) => {
+      if (!isMounted || !fresh || fresh.records.length === 0) return;
+      setComprasRecords(fresh.records);
+      setComprasReport(fresh.report);
+      setToastNotification({
+        type: 'info',
+        title: 'Planilha de Produtos Atualizada',
+        description: `Nova versão recebida em tempo real: ${fresh.report.fileName} (${fresh.records.length.toLocaleString('pt-BR')} registros).`,
+      });
+    });
+
+    const unsubServicos = subscribeToDatasetUpdates('Serviços', (fresh) => {
+      if (!isMounted || !fresh || fresh.records.length === 0) return;
+      setServicosRecords(fresh.records);
+      setServicosReport(fresh.report);
+      setToastNotification({
+        type: 'info',
+        title: 'Planilha de Serviços Atualizada',
+        description: `Nova versão recebida em tempo real: ${fresh.report.fileName} (${fresh.records.length.toLocaleString('pt-BR')} registros).`,
+      });
+    });
+
     return () => {
       isMounted = false;
+      unsubCompras();
+      unsubServicos();
     };
   }, []);
 
-  // Processamento do upload independente por Origem
+  // Processamento do upload independente por Origem com gravação persistente na nuvem
   const handleFileSelected = async (file: File, origin: RecordOrigin) => {
     setIsLoading(true);
     setError(null);
+    setUploadProgress({
+      step: `Lendo e estruturando planilha de ${origin}...`,
+      percent: 5,
+      savedChunks: 0,
+      totalChunks: 1,
+    });
+
     try {
       const otherReport = origin === 'Compras' ? servicosReport : comprasReport;
       const otherHeaders = otherReport ? otherReport.recognizedColumns.map((c) => c.matchedHeader) : undefined;
@@ -202,10 +254,19 @@ export default function App() {
       }
 
       setIsSyncingWithFirestore(true);
+
+      // Salva tanto no cache local quanto no Cloud Firestore compartilhado
+      const isSavedToCloud = await saveBaseData(
+        origin,
+        result.records,
+        result.report,
+        true,
+        (prog) => setUploadProgress(prog)
+      );
+
       if (origin === 'Compras') {
         setComprasRecords(result.records);
         setComprasReport(result.report);
-        saveBaseData('Compras', result.records, result.report);
         if (servicosRecords.length > 0) {
           setOriginFilter('Consolidado');
         } else {
@@ -214,7 +275,6 @@ export default function App() {
       } else {
         setServicosRecords(result.records);
         setServicosReport(result.report);
-        saveBaseData('Serviços', result.records, result.report);
         if (comprasRecords.length > 0) {
           setOriginFilter('Consolidado');
         } else {
@@ -224,6 +284,20 @@ export default function App() {
 
       setFilters(INITIAL_FILTERS);
       setShowUploadView(false);
+
+      if (isSavedToCloud) {
+        setToastNotification({
+          type: 'success',
+          title: `Planilha de ${origin === 'Compras' ? 'Produtos' : 'Serviços'} Publicada na Nuvem!`,
+          description: `${result.records.length.toLocaleString('pt-BR')} registros salvos no Firebase Firestore da Projel. Toda a equipe já visualiza esses dados.`,
+        });
+      } else {
+        setToastNotification({
+          type: 'warning',
+          title: `Planilha de ${origin === 'Compras' ? 'Produtos' : 'Serviços'} Salva no Navegador`,
+          description: 'Os dados foram salvos no armazenamento local. A gravação na nuvem atingiu o limite temporário de cota do Firebase.',
+        });
+      }
     } catch (err: unknown) {
       console.error(err);
       const msg = err instanceof Error ? err.message : `Erro ao processar a planilha de ${origin}.`;
@@ -231,27 +305,27 @@ export default function App() {
     } finally {
       setIsLoading(false);
       setIsSyncingWithFirestore(false);
+      setUploadProgress(null);
     }
   };
 
-  // Carrega demonstração sob demanda
+  // Carrega demonstração sob demanda (apenas no navegador, sem poluir a nuvem)
   const handleLoadDemo = async (target: 'both' | 'compras' | 'servicos' = 'both') => {
     setIsLoading(true);
-    setIsSyncingWithFirestore(true);
     setError(null);
     try {
       if (target === 'both' || target === 'compras') {
         const demo = generateComprasDemoData();
         setComprasRecords(demo.records);
         setComprasReport(demo.report);
-        saveBaseData('Compras', demo.records, demo.report);
+        saveBaseDataLocal('Compras', demo.records, demo.report);
       }
 
       if (target === 'both' || target === 'servicos') {
         const demo = generateServicosDemoData();
         setServicosRecords(demo.records);
         setServicosReport(demo.report);
-        saveBaseData('Serviços', demo.records, demo.report);
+        saveBaseDataLocal('Serviços', demo.records, demo.report);
       }
 
       if (target === 'both') {
@@ -264,12 +338,17 @@ export default function App() {
 
       setFilters(INITIAL_FILTERS);
       setShowUploadView(false);
+
+      setToastNotification({
+        type: 'info',
+        title: 'Dados de Demonstração Carregados',
+        description: 'Os dados de exemplo da Projel estão ativos para testes no seu navegador.',
+      });
     } catch (err) {
       console.error(err);
       setError('Erro ao carregar dados de demonstração.');
     } finally {
       setIsLoading(false);
-      setIsSyncingWithFirestore(false);
     }
   };
 
@@ -493,6 +572,7 @@ export default function App() {
             comprasReport={comprasReport}
             servicosReport={servicosReport}
             onContinueToDashboard={() => setShowUploadView(false)}
+            uploadProgress={uploadProgress}
           />
         </div>
       )}
@@ -679,6 +759,44 @@ export default function App() {
           setExcludeCancelled(exc);
         }}
       />
+
+      {/* Notificação Toast Flutuante de Sincronização em Nuvem */}
+      {toastNotification && (
+        <div className="fixed bottom-5 right-5 z-50 max-w-md w-full p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl animate-in slide-in-from-bottom-5 duration-300">
+          <div className="flex items-start gap-3">
+            {toastNotification.type === 'success' && (
+              <div className="p-2 rounded-xl bg-emerald-100 dark:bg-emerald-950/80 text-emerald-600 dark:text-emerald-400 shrink-0">
+                <CheckCircle2 className="w-5 h-5" />
+              </div>
+            )}
+            {toastNotification.type === 'warning' && (
+              <div className="p-2 rounded-xl bg-amber-100 dark:bg-amber-950/80 text-amber-600 dark:text-amber-400 shrink-0">
+                <AlertCircle className="w-5 h-5" />
+              </div>
+            )}
+            {toastNotification.type === 'info' && (
+              <div className="p-2 rounded-xl bg-blue-100 dark:bg-blue-950/80 text-blue-600 dark:text-blue-400 shrink-0">
+                <Briefcase className="w-5 h-5" />
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <h5 className="text-xs font-bold text-slate-900 dark:text-white">
+                {toastNotification.title}
+              </h5>
+              <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                {toastNotification.description}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setToastNotification(null)}
+              className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

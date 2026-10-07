@@ -4,6 +4,7 @@ import {
   loadBaseDataFromFirestore,
   clearBaseDataFromFirestore,
   clearAllFirestoreData,
+  SaveProgressCallback,
 } from '../firebase/firestoreService';
 
 const STORAGE_KEY_COMPRAS_DATA = 'projel_purchases_compras_records_v2';
@@ -13,13 +14,12 @@ const STORAGE_KEY_SERVICOS_REPORT = 'projel_purchases_servicos_report_v2';
 const STORAGE_KEY_THEME = 'projel_dashboard_theme_v1';
 
 /**
- * Salva base de dados no armazenamento local (localStorage + sessionStorage) e no Firestore (nuvem)
+ * Salva apenas no armazenamento local (localStorage + sessionStorage) sem enviar para a nuvem
  */
-export function saveBaseData(origin: RecordOrigin, records: PurchaseRecord[], report: MappingReport): void {
+export function saveBaseDataLocal(origin: RecordOrigin, records: PurchaseRecord[], report: MappingReport): void {
   const dataKey = origin === 'Serviços' ? STORAGE_KEY_SERVICOS_DATA : STORAGE_KEY_COMPRAS_DATA;
   const reportKey = origin === 'Serviços' ? STORAGE_KEY_SERVICOS_REPORT : STORAGE_KEY_COMPRAS_REPORT;
 
-  // 1. Salva em sessionStorage e localStorage para garantir persistência entre sessões e recargas
   if (typeof window !== 'undefined') {
     try {
       const serializedRecords = JSON.stringify(records);
@@ -32,11 +32,34 @@ export function saveBaseData(origin: RecordOrigin, records: PurchaseRecord[], re
       console.warn(`Aviso ao persistir base ${origin} no cache do navegador:`, err);
     }
   }
+}
 
-  // 2. Persiste de forma assíncrona no Cloud Firestore (se a cota permitir)
-  saveBaseDataToFirestore(origin, records, report).catch((err) => {
-    console.warn(`Aviso ao sincronizar base ${origin} com Firestore:`, err);
-  });
+/**
+ * Salva base de dados no armazenamento local e sincroniza no Cloud Firestore (compartilhado com a empresa).
+ * Retorna true se gravou no Firestore com sucesso.
+ */
+export async function saveBaseData(
+  origin: RecordOrigin,
+  records: PurchaseRecord[],
+  report: MappingReport,
+  syncToCloud = true,
+  onProgress?: SaveProgressCallback
+): Promise<boolean> {
+  // 1. Sempre salva localmente primeiro para resposta imediata
+  saveBaseDataLocal(origin, records, report);
+
+  // 2. Se for solicitado e não for arquivo demo puro, persiste no Cloud Firestore
+  if (syncToCloud) {
+    try {
+      const cloudSuccess = await saveBaseDataToFirestore(origin, records, report, onProgress);
+      return cloudSuccess;
+    } catch (err) {
+      console.warn(`Aviso ao sincronizar base ${origin} com Firestore:`, err);
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -76,21 +99,12 @@ export function loadBaseData(origin: RecordOrigin): { records: PurchaseRecord[];
  */
 export async function loadBaseDataAsync(
   origin: RecordOrigin
-): Promise<{ records: PurchaseRecord[]; report: MappingReport } | null> {
+): Promise<{ records: PurchaseRecord[]; report: MappingReport; isDemo?: boolean } | null> {
   try {
     const firestoreData = await loadBaseDataFromFirestore(origin);
     if (firestoreData && firestoreData.records.length > 0) {
       // Atualiza o cache local persistente com os dados mais recentes do Firestore
-      try {
-        const dataKey = origin === 'Serviços' ? STORAGE_KEY_SERVICOS_DATA : STORAGE_KEY_COMPRAS_DATA;
-        const reportKey = origin === 'Serviços' ? STORAGE_KEY_SERVICOS_REPORT : STORAGE_KEY_COMPRAS_REPORT;
-        const serializedRecords = JSON.stringify(firestoreData.records);
-        const serializedReport = JSON.stringify(firestoreData.report);
-        sessionStorage.setItem(dataKey, serializedRecords);
-        sessionStorage.setItem(reportKey, serializedReport);
-        localStorage.setItem(dataKey, serializedRecords);
-        localStorage.setItem(reportKey, serializedReport);
-      } catch {}
+      saveBaseDataLocal(origin, firestoreData.records, firestoreData.report);
       return firestoreData;
     }
   } catch (err) {
@@ -142,20 +156,6 @@ export function loadThemePreference(): 'light' | 'dark' {
     console.warn(e);
   }
   return 'light';
-}
-
-export function saveSessionPurchases(
-  records: PurchaseRecord[],
-  report: MappingReport,
-  origin: RecordOrigin = 'Compras'
-): void {
-  saveBaseData(origin, records, report);
-}
-
-export function loadSessionPurchases(
-  origin: RecordOrigin = 'Compras'
-): { records: PurchaseRecord[]; report: MappingReport } | null {
-  return loadBaseData(origin);
 }
 
 export {

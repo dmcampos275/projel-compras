@@ -5,14 +5,15 @@ import {
   deleteDoc,
   collection,
   getDocs,
+  onSnapshot,
 } from 'firebase/firestore';
 import { db, OperationType, handleFirestoreError } from './config';
 import { PurchaseRecord, MappingReport, RecordOrigin } from '../types/purchases';
 
-const CHUNK_SIZE = 150;
+const CHUNK_SIZE = 250;
 
 /**
- * Sanitiza objetos para o Firestore (substitui undefined por null ou remove, converte Date em ISO string)
+ * Sanitiza objetos para o Firestore (substitui undefined por null, converte Date em ISO string)
  */
 function sanitizeRecordForFirestore(r: PurchaseRecord): Record<string, any> {
   const sanitized: Record<string, any> = {};
@@ -43,7 +44,7 @@ function deserializeFirestoreRecord(raw: any, origin: RecordOrigin): PurchaseRec
   };
 }
 
-function getDatasetId(origin: RecordOrigin): 'compras' | 'servicos' {
+export function getDatasetId(origin: RecordOrigin): 'compras' | 'servicos' {
   return origin === 'Serviços' ? 'servicos' : 'compras';
 }
 
@@ -60,61 +61,109 @@ function isQuotaOrPermissionError(err: any): boolean {
   );
 }
 
+export interface SaveProgressCallback {
+  (progress: { step: string; percent: number; savedChunks: number; totalChunks: number }): void;
+}
+
 /**
- * Salva a base completa (comprasRecords ou servicosRecords) no Firestore de forma particionada e persistente.
- * Retorna true se salvou na nuvem, ou false se a cota gratuita do Firebase foi atingida.
+ * Salva a base completa (Produtos/Compras ou Serviços) no Firestore de forma particionada,
+ * persistente e compartilhada com toda a empresa.
  */
 export async function saveBaseDataToFirestore(
   origin: RecordOrigin,
   records: PurchaseRecord[],
-  report: MappingReport
+  report: MappingReport,
+  onProgress?: SaveProgressCallback
 ): Promise<boolean> {
   const datasetId = getDatasetId(origin);
   const datasetDocPath = `datasets/${datasetId}`;
 
   try {
+    const isDemo = (report.fileName || '').toLowerCase().includes('demo');
     const sanitizedRecords = records.map(sanitizeRecordForFirestore);
     const totalChunks = Math.ceil(sanitizedRecords.length / CHUNK_SIZE);
 
-    // 1. Grava as partições (chunks)
-    for (let i = 0; i < totalChunks; i++) {
-      const chunkRecords = sanitizedRecords.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-      const chunkPath = `datasets/${datasetId}/chunks/chunk_${i}`;
+    onProgress?.({
+      step: `Preparando ${records.length.toLocaleString('pt-BR')} registros em ${totalChunks} pacotes...`,
+      percent: 10,
+      savedChunks: 0,
+      totalChunks,
+    });
 
-      try {
-        await setDoc(doc(db, 'datasets', datasetId, 'chunks', `chunk_${i}`), {
-          id: `chunk_${i}`,
-          datasetId,
-          chunkIndex: i,
-          count: chunkRecords.length,
-          records: chunkRecords,
-          updatedAt: new Date().toISOString(),
-        });
-      } catch (chunkErr: any) {
-        if (isQuotaOrPermissionError(chunkErr)) {
-          console.warn(
-            `[Firestore] Cota diária gratuita atingida ou permissão ao gravar chunk ${i}. Dados salvos localmente no navegador.`
-          );
-          return false;
-        }
-        handleFirestoreError(chunkErr, OperationType.WRITE, chunkPath);
+    // 1. Grava os chunks em lotes controlados (4 chunks simultâneos para rapidez sem estourar limites)
+    const BATCH_CONCURRENCY = 4;
+    let savedChunks = 0;
+
+    for (let i = 0; i < totalChunks; i += BATCH_CONCURRENCY) {
+      const batchIndices: number[] = [];
+      for (let j = i; j < Math.min(i + BATCH_CONCURRENCY, totalChunks); j++) {
+        batchIndices.push(j);
       }
+
+      await Promise.all(
+        batchIndices.map(async (chunkIdx) => {
+          const chunkRecords = sanitizedRecords.slice(
+            chunkIdx * CHUNK_SIZE,
+            (chunkIdx + 1) * CHUNK_SIZE
+          );
+          const chunkPath = `datasets/${datasetId}/chunks/chunk_${chunkIdx}`;
+
+          try {
+            await setDoc(doc(db, 'datasets', datasetId, 'chunks', `chunk_${chunkIdx}`), {
+              id: `chunk_${chunkIdx}`,
+              datasetId,
+              chunkIndex: chunkIdx,
+              count: chunkRecords.length,
+              records: chunkRecords,
+              updatedAt: new Date().toISOString(),
+            });
+          } catch (chunkErr: any) {
+            if (isQuotaOrPermissionError(chunkErr)) {
+              console.warn(
+                `[Firestore] Cota diária gratuita ou permissão ao gravar chunk ${chunkIdx}. Dados mantidos localmente.`
+              );
+              throw chunkErr;
+            }
+            handleFirestoreError(chunkErr, OperationType.WRITE, chunkPath);
+          }
+        })
+      );
+
+      savedChunks += batchIndices.length;
+      const progressPercent = 10 + Math.round((savedChunks / totalChunks) * 75);
+      onProgress?.({
+        step: `Gravando no Firebase Firestore (${savedChunks}/${totalChunks} pacotes)...`,
+        percent: progressPercent,
+        savedChunks,
+        totalChunks,
+      });
     }
 
-    // 2. Limpa partições antigas que possam ter sobrado se o novo arquivo tiver menos linhas
+    // 2. Limpa partições antigas remanescentes se a planilha nova tiver menos registros
     try {
       const existingChunksSnapshot = await getDocs(collection(db, 'datasets', datasetId, 'chunks'));
+      const deletePromises: Promise<void>[] = [];
       for (const chunkDoc of existingChunksSnapshot.docs) {
         const data = chunkDoc.data();
         if (typeof data.chunkIndex === 'number' && data.chunkIndex >= totalChunks) {
-          await deleteDoc(chunkDoc.ref);
+          deletePromises.push(deleteDoc(chunkDoc.ref));
         }
       }
+      if (deletePromises.length > 0) {
+        await Promise.all(deletePromises);
+      }
     } catch {
-      // Ignora erro não crítico de limpeza de chunks órfãos
+      // Ignora falha não crítica de limpeza
     }
 
     // 3. Grava o documento principal de metadados da base
+    onProgress?.({
+      step: 'Finalizando publicação e registrando metadados...',
+      percent: 95,
+      savedChunks: totalChunks,
+      totalChunks,
+    });
+
     const metadataPayload = {
       id: datasetId,
       origin,
@@ -122,32 +171,40 @@ export async function saveBaseDataToFirestore(
       loadTimestamp: report.loadTimestamp,
       totalRows: records.length,
       chunksCount: totalChunks,
-      report: JSON.parse(JSON.stringify(report)), // sanitiza undefined do report
+      isDemo,
+      report: JSON.parse(JSON.stringify(report)),
       updatedAt: new Date().toISOString(),
     };
 
     await setDoc(doc(db, 'datasets', datasetId), metadataPayload);
+
+    onProgress?.({
+      step: 'Concluído com sucesso!',
+      percent: 100,
+      savedChunks: totalChunks,
+      totalChunks,
+    });
+
     return true;
   } catch (err: any) {
     if (isQuotaOrPermissionError(err)) {
       console.warn(
-        `[Firestore] Cota diária de gravação gratuita do Firebase atingida para ${origin}. Os dados permanecem seguros no cache persistente local.`
+        `[Firestore] Cota diária do Firebase atingida para ${origin}. Os dados permanecem seguros no cache persistente local do navegador.`
       );
       return false;
     }
-    handleFirestoreError(err, OperationType.WRITE, datasetDocPath);
+    console.error(`[Firestore] Erro ao salvar base ${origin}:`, err);
     return false;
   }
 }
 
 /**
- * Carrega a base completa do Firestore. Retorna null se não houver dados ou se a cota do Firebase foi atingida.
+ * Carrega a base completa do Firestore. Retorna null se não houver dados ou se a cota foi atingida.
  */
 export async function loadBaseDataFromFirestore(
   origin: RecordOrigin
-): Promise<{ records: PurchaseRecord[]; report: MappingReport } | null> {
+): Promise<{ records: PurchaseRecord[]; report: MappingReport; isDemo?: boolean; updatedAt?: string } | null> {
   const datasetId = getDatasetId(origin);
-  const datasetDocPath = `datasets/${datasetId}`;
 
   try {
     const docSnap = await getDoc(doc(db, 'datasets', datasetId));
@@ -157,11 +214,12 @@ export async function loadBaseDataFromFirestore(
 
     const metadata = docSnap.data();
     const chunksCount = metadata.chunksCount || 0;
+    const isDemo = !!metadata.isDemo || (metadata.fileName || '').toLowerCase().includes('demo');
 
     let chunkDataList: any[] = [];
 
     if (chunksCount > 0) {
-      // Carregamento direto por chave primária de cada chunk: instantâneo, paralelo e imune a limites de memória do Firestore
+      // Carregamento direto por chave primária de cada chunk
       const chunkPromises = Array.from({ length: chunksCount }, (_, i) =>
         getDoc(doc(db, 'datasets', datasetId, 'chunks', `chunk_${i}`))
       );
@@ -195,18 +253,54 @@ export async function loadBaseDataFromFirestore(
     return {
       records: allRecords,
       report: metadata.report as MappingReport,
+      isDemo,
+      updatedAt: metadata.updatedAt,
     };
   } catch (err: any) {
     if (isQuotaOrPermissionError(err)) {
       console.warn(
-        `[Firestore] Cota de leitura/gravação atingida ou offline para base ${origin}. O sistema operará com os dados locais salvos.`
+        `[Firestore] Cota de leitura atingida ou indisponível para base ${origin}. O sistema operará com os dados locais salvos.`
       );
       return null;
     }
-    // Não interrompe o boot da aplicação se o Firestore estiver com indisponibilidade
     console.warn(`[Firestore] Aviso ao carregar base ${origin} do Firestore:`, err);
     return null;
   }
+}
+
+/**
+ * Escuta atualizações em tempo real nos metadados do Firestore para que toda a empresa
+ * veja os novos dados assim que qualquer usuário fizer upload de uma planilha.
+ */
+export function subscribeToDatasetUpdates(
+  origin: RecordOrigin,
+  onUpdate: (data: { records: PurchaseRecord[]; report: MappingReport; updatedAt?: string; isDemo?: boolean } | null) => void
+): () => void {
+  const datasetId = getDatasetId(origin);
+  let lastSeenUpdatedAt: string | null = null;
+
+  return onSnapshot(
+    doc(db, 'datasets', datasetId),
+    async (snapshot) => {
+      if (!snapshot.exists()) {
+        return;
+      }
+      const meta = snapshot.data();
+      const currentUpdatedAt = meta?.updatedAt || null;
+
+      // Só recarrega se o timestamp mudou
+      if (currentUpdatedAt && currentUpdatedAt !== lastSeenUpdatedAt) {
+        lastSeenUpdatedAt = currentUpdatedAt;
+        const freshData = await loadBaseDataFromFirestore(origin);
+        if (freshData) {
+          onUpdate(freshData);
+        }
+      }
+    },
+    (error) => {
+      console.warn(`[Firestore] Listener em tempo real inativo para ${origin}:`, error.message);
+    }
+  );
 }
 
 /**
@@ -214,7 +308,6 @@ export async function loadBaseDataFromFirestore(
  */
 export async function clearBaseDataFromFirestore(origin: RecordOrigin): Promise<void> {
   const datasetId = getDatasetId(origin);
-  const datasetDocPath = `datasets/${datasetId}`;
 
   try {
     const docSnap = await getDoc(doc(db, 'datasets', datasetId));
@@ -234,7 +327,7 @@ export async function clearBaseDataFromFirestore(origin: RecordOrigin): Promise<
       console.warn(`[Firestore] Cota atingida ao excluir base ${origin} na nuvem.`);
       return;
     }
-    handleFirestoreError(err, OperationType.DELETE, datasetDocPath);
+    console.warn(`[Firestore] Erro ao excluir base ${origin}:`, err);
   }
 }
 
