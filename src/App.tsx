@@ -179,11 +179,8 @@ export default function App() {
           setComprasReport(demoCompras.report);
           setServicosRecords(demoServicos.records);
           setServicosReport(demoServicos.report);
-          setOriginFilter('Consolidado');
-
-          // Salva apenas no armazenamento local para não poluir o Firestore da empresa
-          saveBaseDataLocal('Compras', demoCompras.records, demoCompras.report);
-          saveBaseDataLocal('Serviços', demoServicos.records, demoServicos.report);
+          // Mantém demo apenas em memória temporária para navegação inicial se nada tiver sido carregado
+          // NUNCA grava demo no armazenamento persistente automaticamente
         } else {
           if (cloudCompras && cloudServicos) {
             setOriginFilter('Consolidado');

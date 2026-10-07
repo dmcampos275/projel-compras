@@ -7,15 +7,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const distPath = path.resolve(__dirname, 'dist');
+const PORT = Number(process.env.PORT) || 3000;
 const dataDir = path.resolve(__dirname, 'data');
 
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
-// Suporte a payloads de até 100MB para planilhas grandes do ERP
+// Suporte a payloads de até 100MB para planilhas grandes do ERP Projel
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
@@ -86,14 +85,29 @@ app.delete('/api/datasets/:origin', (req, res) => {
   }
 });
 
-// Middleware para servir os arquivos estáticos compilados pelo Vite
-app.use(express.static(distPath));
+async function start() {
+  const isProduction = process.env.NODE_ENV === 'production';
 
-// Fallback SPA: qualquer rota não estática retorna o index.html
-app.get('*', (_req, res) => {
-  res.sendFile(path.join(distPath, 'index.html'));
-});
+  if (!isProduction) {
+    // Modo desenvolvimento: Vite middlewares montados no Express
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    // Modo produção: serve arquivos estáticos do dist
+    const distPath = path.resolve(__dirname, 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Projel Compras] Servidor Express ativo na porta ${PORT}`);
-});
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Projel Compras] Servidor Full-Stack ativo na porta ${PORT}`);
+  });
+}
+
+start();

@@ -16,9 +16,9 @@ coverage/
 .env.production.local
 *.log
 
-# System files
-.DS_Store
-Thumbs.db
+# Uploaded Data
+data/*.json
+!data/.gitkeep
 
 # Editor & AI Studio internal dirs
 .vscode/
