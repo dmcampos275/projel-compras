@@ -20,15 +20,17 @@ export function saveBaseData(origin: RecordOrigin, records: PurchaseRecord[], re
   const reportKey = origin === 'Serviços' ? STORAGE_KEY_SERVICOS_REPORT : STORAGE_KEY_COMPRAS_REPORT;
 
   // 1. Salva em sessionStorage e localStorage para garantir persistência entre sessões e recargas
-  try {
-    const serializedRecords = JSON.stringify(records);
-    const serializedReport = JSON.stringify(report);
-    sessionStorage.setItem(dataKey, serializedRecords);
-    sessionStorage.setItem(reportKey, serializedReport);
-    localStorage.setItem(dataKey, serializedRecords);
-    localStorage.setItem(reportKey, serializedReport);
-  } catch (err) {
-    console.warn(`Aviso ao persistir base ${origin} no cache do navegador:`, err);
+  if (typeof window !== 'undefined') {
+    try {
+      const serializedRecords = JSON.stringify(records);
+      const serializedReport = JSON.stringify(report);
+      window.sessionStorage.setItem(dataKey, serializedRecords);
+      window.sessionStorage.setItem(reportKey, serializedReport);
+      window.localStorage.setItem(dataKey, serializedRecords);
+      window.localStorage.setItem(reportKey, serializedReport);
+    } catch (err) {
+      console.warn(`Aviso ao persistir base ${origin} no cache do navegador:`, err);
+    }
   }
 
   // 2. Persiste de forma assíncrona no Cloud Firestore (se a cota permitir)
@@ -44,9 +46,11 @@ export function loadBaseData(origin: RecordOrigin): { records: PurchaseRecord[];
   const dataKey = origin === 'Serviços' ? STORAGE_KEY_SERVICOS_DATA : STORAGE_KEY_COMPRAS_DATA;
   const reportKey = origin === 'Serviços' ? STORAGE_KEY_SERVICOS_REPORT : STORAGE_KEY_COMPRAS_REPORT;
 
+  if (typeof window === 'undefined') return null;
+
   try {
-    const rawData = sessionStorage.getItem(dataKey) || localStorage.getItem(dataKey);
-    const rawReport = sessionStorage.getItem(reportKey) || localStorage.getItem(reportKey);
+    const rawData = window.sessionStorage.getItem(dataKey) || window.localStorage.getItem(dataKey);
+    const rawReport = window.sessionStorage.getItem(reportKey) || window.localStorage.getItem(reportKey);
     if (!rawData || !rawReport) return null;
 
     const parsedRecords = JSON.parse(rawData);
@@ -100,13 +104,15 @@ export function clearBaseData(origin: RecordOrigin): void {
   const dataKey = origin === 'Serviços' ? STORAGE_KEY_SERVICOS_DATA : STORAGE_KEY_COMPRAS_DATA;
   const reportKey = origin === 'Serviços' ? STORAGE_KEY_SERVICOS_REPORT : STORAGE_KEY_COMPRAS_REPORT;
 
-  try {
-    sessionStorage.removeItem(dataKey);
-    sessionStorage.removeItem(reportKey);
-    localStorage.removeItem(dataKey);
-    localStorage.removeItem(reportKey);
-  } catch (err) {
-    console.warn(err);
+  if (typeof window !== 'undefined') {
+    try {
+      window.sessionStorage.removeItem(dataKey);
+      window.sessionStorage.removeItem(reportKey);
+      window.localStorage.removeItem(dataKey);
+      window.localStorage.removeItem(reportKey);
+    } catch (err) {
+      console.warn(err);
+    }
   }
 
   clearBaseDataFromFirestore(origin).catch(console.warn);
@@ -119,16 +125,18 @@ export function clearAllSavedData(): void {
 }
 
 export function saveThemePreference(theme: 'light' | 'dark'): void {
+  if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(STORAGE_KEY_THEME, theme);
+    window.localStorage.setItem(STORAGE_KEY_THEME, theme);
   } catch (e) {
     console.warn(e);
   }
 }
 
 export function loadThemePreference(): 'light' | 'dark' {
+  if (typeof window === 'undefined') return 'light';
   try {
-    const saved = localStorage.getItem(STORAGE_KEY_THEME);
+    const saved = window.localStorage.getItem(STORAGE_KEY_THEME);
     if (saved === 'dark' || saved === 'light') return saved;
   } catch (e) {
     console.warn(e);

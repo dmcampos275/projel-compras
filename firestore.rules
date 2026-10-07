@@ -11,10 +11,6 @@ service cloud.firestore {
       return id == 'compras' || id == 'servicos';
     }
 
-    function isValidChunkId(id) {
-      return id is string && id.size() > 0 && id.size() <= 64;
-    }
-
     // 2. Test Connection (Validação inicial de boot)
     match /test/connection {
       allow read: if true;
@@ -22,13 +18,11 @@ service cloud.firestore {
 
     // 3. Coleção de Metadados de Datasets (Compras e Serviços)
     match /datasets/{datasetId} {
-      allow read: if isValidDatasetId(datasetId);
-      allow create, update, delete: if isValidDatasetId(datasetId);
+      allow read, write: if isValidDatasetId(datasetId);
 
       // 4. Subcoleção de Partições de Registros (Chunks)
       match /chunks/{chunkId} {
-        allow read: if isValidDatasetId(datasetId) && isValidChunkId(chunkId);
-        allow create, update, delete: if isValidDatasetId(datasetId) && isValidChunkId(chunkId);
+        allow read, write: if isValidDatasetId(datasetId);
       }
     }
   }

@@ -156,19 +156,35 @@ export async function loadBaseDataFromFirestore(
     }
 
     const metadata = docSnap.data();
-    const chunksSnapshot = await getDocs(collection(db, 'datasets', datasetId, 'chunks'));
+    const chunksCount = metadata.chunksCount || 0;
 
-    if (chunksSnapshot.empty) {
+    let chunkDataList: any[] = [];
+
+    if (chunksCount > 0) {
+      // Carregamento direto por chave primária de cada chunk: instantâneo, paralelo e imune a limites de memória do Firestore
+      const chunkPromises = Array.from({ length: chunksCount }, (_, i) =>
+        getDoc(doc(db, 'datasets', datasetId, 'chunks', `chunk_${i}`))
+      );
+      const chunkSnaps = await Promise.all(chunkPromises);
+      for (const s of chunkSnaps) {
+        if (s.exists()) {
+          chunkDataList.push(s.data());
+        }
+      }
+    } else {
+      // Fallback para getDocs caso legados não possuam chunksCount
+      const chunksSnapshot = await getDocs(collection(db, 'datasets', datasetId, 'chunks'));
+      chunkDataList = chunksSnapshot.docs
+        .map((d) => d.data())
+        .sort((a, b) => (a.chunkIndex || 0) - (b.chunkIndex || 0));
+    }
+
+    if (chunkDataList.length === 0) {
       return null;
     }
 
-    // Ordena os chunks sequencialmente pelo chunkIndex
-    const sortedChunkDocs = chunksSnapshot.docs
-      .map((d) => d.data())
-      .sort((a, b) => (a.chunkIndex || 0) - (b.chunkIndex || 0));
-
     const allRecords: PurchaseRecord[] = [];
-    for (const chunkData of sortedChunkDocs) {
+    for (const chunkData of chunkDataList) {
       if (Array.isArray(chunkData.records)) {
         for (const raw of chunkData.records) {
           allRecords.push(deserializeFirestoreRecord(raw, origin));
@@ -201,9 +217,16 @@ export async function clearBaseDataFromFirestore(origin: RecordOrigin): Promise<
   const datasetDocPath = `datasets/${datasetId}`;
 
   try {
-    const chunksSnapshot = await getDocs(collection(db, 'datasets', datasetId, 'chunks'));
-    for (const chunkDoc of chunksSnapshot.docs) {
-      await deleteDoc(chunkDoc.ref);
+    const docSnap = await getDoc(doc(db, 'datasets', datasetId));
+    if (docSnap.exists()) {
+      const chunksCount = docSnap.data().chunksCount || 0;
+      if (chunksCount > 0) {
+        await Promise.all(
+          Array.from({ length: chunksCount }, (_, i) =>
+            deleteDoc(doc(db, 'datasets', datasetId, 'chunks', `chunk_${i}`))
+          )
+        );
+      }
     }
     await deleteDoc(doc(db, 'datasets', datasetId));
   } catch (err: any) {
