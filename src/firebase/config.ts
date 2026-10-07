@@ -66,7 +66,11 @@ export async function testConnection(): Promise<boolean> {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
     return true;
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.code === 'resource-exhausted' || error?.message?.includes('Quota limit exceeded')) {
+      console.warn('[Firestore] Cota diária gratuita do Firebase atingida; o sistema continuará operando com armazenamento local persistente.');
+      return false;
+    }
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.warn('Firestore offline ou não configurado corretamente.');
     }

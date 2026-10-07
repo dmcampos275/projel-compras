@@ -35,9 +35,7 @@ import {
 import { calculateKPIs } from './utils/kpiCalculator';
 import {
   saveBaseData,
-  loadBaseData,
   loadBaseDataAsync,
-  saveBaseDataToFirestore,
   clearAllSavedData,
   saveThemePreference,
   loadThemePreference,
@@ -163,11 +161,9 @@ export default function App() {
           setServicosReport(demoServicos.report);
           setOriginFilter('Consolidado');
 
-          // Persiste os dados iniciais no Firestore
-          await Promise.all([
-            saveBaseDataToFirestore('Compras', demoCompras.records, demoCompras.report),
-            saveBaseDataToFirestore('Serviços', demoServicos.records, demoServicos.report),
-          ]);
+          // Salva no armazenamento persistente local (localStorage + sessionStorage)
+          saveBaseData('Compras', demoCompras.records, demoCompras.report);
+          saveBaseData('Serviços', demoServicos.records, demoServicos.report);
         } else {
           if (cloudCompras && cloudServicos) {
             setOriginFilter('Consolidado');
@@ -209,7 +205,7 @@ export default function App() {
       if (origin === 'Compras') {
         setComprasRecords(result.records);
         setComprasReport(result.report);
-        await saveBaseDataToFirestore('Compras', result.records, result.report);
+        saveBaseData('Compras', result.records, result.report);
         if (servicosRecords.length > 0) {
           setOriginFilter('Consolidado');
         } else {
@@ -218,7 +214,7 @@ export default function App() {
       } else {
         setServicosRecords(result.records);
         setServicosReport(result.report);
-        await saveBaseDataToFirestore('Serviços', result.records, result.report);
+        saveBaseData('Serviços', result.records, result.report);
         if (comprasRecords.length > 0) {
           setOriginFilter('Consolidado');
         } else {
@@ -244,23 +240,19 @@ export default function App() {
     setIsSyncingWithFirestore(true);
     setError(null);
     try {
-      const promises: Promise<any>[] = [];
-
       if (target === 'both' || target === 'compras') {
         const demo = generateComprasDemoData();
         setComprasRecords(demo.records);
         setComprasReport(demo.report);
-        promises.push(saveBaseDataToFirestore('Compras', demo.records, demo.report));
+        saveBaseData('Compras', demo.records, demo.report);
       }
 
       if (target === 'both' || target === 'servicos') {
         const demo = generateServicosDemoData();
         setServicosRecords(demo.records);
         setServicosReport(demo.report);
-        promises.push(saveBaseDataToFirestore('Serviços', demo.records, demo.report));
+        saveBaseData('Serviços', demo.records, demo.report);
       }
-
-      await Promise.all(promises);
 
       if (target === 'both') {
         setOriginFilter('Consolidado');

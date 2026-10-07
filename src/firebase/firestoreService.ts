@@ -5,7 +5,6 @@ import {
   deleteDoc,
   collection,
   getDocs,
-  onSnapshot,
 } from 'firebase/firestore';
 import { db, OperationType, handleFirestoreError } from './config';
 import { PurchaseRecord, MappingReport, RecordOrigin } from '../types/purchases';
@@ -48,14 +47,28 @@ function getDatasetId(origin: RecordOrigin): 'compras' | 'servicos' {
   return origin === 'Serviços' ? 'servicos' : 'compras';
 }
 
+function isQuotaOrPermissionError(err: any): boolean {
+  if (!err) return false;
+  const msg = err.message || String(err);
+  const code = err.code || '';
+  return (
+    code === 'resource-exhausted' ||
+    code === 'permission-denied' ||
+    msg.includes('Quota limit exceeded') ||
+    msg.includes('Free daily write units') ||
+    msg.includes('Missing or insufficient permissions')
+  );
+}
+
 /**
- * Salva a base completa (comprasRecords ou servicosRecords) no Firestore de forma particionada e persistente
+ * Salva a base completa (comprasRecords ou servicosRecords) no Firestore de forma particionada e persistente.
+ * Retorna true se salvou na nuvem, ou false se a cota gratuita do Firebase foi atingida.
  */
 export async function saveBaseDataToFirestore(
   origin: RecordOrigin,
   records: PurchaseRecord[],
   report: MappingReport
-): Promise<void> {
+): Promise<boolean> {
   const datasetId = getDatasetId(origin);
   const datasetDocPath = `datasets/${datasetId}`;
 
@@ -77,7 +90,13 @@ export async function saveBaseDataToFirestore(
           records: chunkRecords,
           updatedAt: new Date().toISOString(),
         });
-      } catch (chunkErr) {
+      } catch (chunkErr: any) {
+        if (isQuotaOrPermissionError(chunkErr)) {
+          console.warn(
+            `[Firestore] Cota diária gratuita atingida ou permissão ao gravar chunk ${i}. Dados salvos localmente no navegador.`
+          );
+          return false;
+        }
         handleFirestoreError(chunkErr, OperationType.WRITE, chunkPath);
       }
     }
@@ -92,7 +111,7 @@ export async function saveBaseDataToFirestore(
         }
       }
     } catch {
-      // Ignora erro de limpeza de chunks órfãos
+      // Ignora erro não crítico de limpeza de chunks órfãos
     }
 
     // 3. Grava o documento principal de metadados da base
@@ -108,13 +127,21 @@ export async function saveBaseDataToFirestore(
     };
 
     await setDoc(doc(db, 'datasets', datasetId), metadataPayload);
-  } catch (err) {
+    return true;
+  } catch (err: any) {
+    if (isQuotaOrPermissionError(err)) {
+      console.warn(
+        `[Firestore] Cota diária de gravação gratuita do Firebase atingida para ${origin}. Os dados permanecem seguros no cache persistente local.`
+      );
+      return false;
+    }
     handleFirestoreError(err, OperationType.WRITE, datasetDocPath);
+    return false;
   }
 }
 
 /**
- * Carrega a base completa do Firestore
+ * Carrega a base completa do Firestore. Retorna null se não houver dados ou se a cota do Firebase foi atingida.
  */
 export async function loadBaseDataFromFirestore(
   origin: RecordOrigin
@@ -153,8 +180,16 @@ export async function loadBaseDataFromFirestore(
       records: allRecords,
       report: metadata.report as MappingReport,
     };
-  } catch (err) {
-    handleFirestoreError(err, OperationType.GET, datasetDocPath);
+  } catch (err: any) {
+    if (isQuotaOrPermissionError(err)) {
+      console.warn(
+        `[Firestore] Cota de leitura/gravação atingida ou offline para base ${origin}. O sistema operará com os dados locais salvos.`
+      );
+      return null;
+    }
+    // Não interrompe o boot da aplicação se o Firestore estiver com indisponibilidade
+    console.warn(`[Firestore] Aviso ao carregar base ${origin} do Firestore:`, err);
+    return null;
   }
 }
 
@@ -171,7 +206,11 @@ export async function clearBaseDataFromFirestore(origin: RecordOrigin): Promise<
       await deleteDoc(chunkDoc.ref);
     }
     await deleteDoc(doc(db, 'datasets', datasetId));
-  } catch (err) {
+  } catch (err: any) {
+    if (isQuotaOrPermissionError(err)) {
+      console.warn(`[Firestore] Cota atingida ao excluir base ${origin} na nuvem.`);
+      return;
+    }
     handleFirestoreError(err, OperationType.DELETE, datasetDocPath);
   }
 }
