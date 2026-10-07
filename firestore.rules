@@ -1,0 +1,44 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    // 2. Test Connection (Necessário para a validação inicial de boot)
+    match /test/connection {
+      allow read: if true;
+    }
+
+    // 3. Coleção de Metadados de Datasets (Compras e Serviços)
+    match /datasets/{datasetId} {
+      allow read: if isValidId(datasetId);
+      allow create, update: if isValidId(datasetId)
+        && incoming().id is string
+        && incoming().origin in ['Compras', 'Serviços']
+        && incoming().totalRows is number
+        && incoming().fileName is string;
+      allow delete: if isValidId(datasetId);
+
+      // 4. Subcoleção de Partições de Registros (Chunks)
+      match /chunks/{chunkId} {
+        allow read: if isValidId(datasetId) && isValidId(chunkId);
+        allow create, update: if isValidId(datasetId) && isValidId(chunkId)
+          && incoming().chunkIndex is number
+          && incoming().count is number
+          && incoming().datasetId == datasetId;
+        allow delete: if isValidId(datasetId) && isValidId(chunkId);
+      }
+    }
+  }
+}

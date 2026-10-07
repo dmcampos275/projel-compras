@@ -1,0 +1,86 @@
+{
+  "entities": {
+    "Dataset": {
+      "title": "Dataset",
+      "description": "Metadados e sumário de carregamento da base de dados (Compras ou Serviços)",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identificador da base de dados (compras ou servicos)",
+          "maxLength": 64
+        },
+        "origin": {
+          "type": "string",
+          "description": "Origem dos registros (Compras ou Serviços)",
+          "enum": ["Compras", "Serviços"]
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Nome da planilha importada",
+          "maxLength": 256
+        },
+        "loadTimestamp": {
+          "type": "string",
+          "description": "Data e hora do carregamento",
+          "maxLength": 64
+        },
+        "totalRows": {
+          "type": "number",
+          "description": "Quantidade total de registros processados"
+        },
+        "chunksCount": {
+          "type": "number",
+          "description": "Quantidade de blocos armazenados no Firestore"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp ISO da última modificação",
+          "maxLength": 64
+        }
+      },
+      "required": ["id", "origin", "fileName", "totalRows"]
+    },
+    "RecordChunk": {
+      "title": "RecordChunk",
+      "description": "Partição de registros de compras ou serviços para persistência e consulta de alta performance",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "ID do bloco (chunk_0, chunk_1...)",
+          "maxLength": 64
+        },
+        "chunkIndex": {
+          "type": "number",
+          "description": "Índice numérico sequencial da partição"
+        },
+        "count": {
+          "type": "number",
+          "description": "Quantidade de registros contidos nesta partição"
+        },
+        "datasetId": {
+          "type": "string",
+          "description": "Identificador da base de dados pertencente",
+          "maxLength": 64
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp ISO da gravação do bloco",
+          "maxLength": 64
+        }
+      },
+      "required": ["id", "chunkIndex", "count", "datasetId"]
+    }
+  },
+  "firestore": {
+    "/datasets/{datasetId}": {
+      "schema": "Dataset",
+      "description": "Coleção de metadados das bases carregadas (compras e servicos)"
+    },
+    "/datasets/{datasetId}/chunks/{chunkId}": {
+      "schema": "RecordChunk",
+      "description": "Subcoleção com as partições de registros das bases"
+    }
+  }
+}
